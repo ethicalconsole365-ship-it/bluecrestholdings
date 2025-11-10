@@ -1,0 +1,1640 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Financial Trading Dashboard | BlueCrest Markets Login & Persistence</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        /* Apply a default dark background and use the Inter font for a professional look */
+        body {
+            font-family: 'Inter', sans-serif;
+            /* CRITICAL: Ensures the main background is pure black, and default text is light gray/white for header/footer */
+            @apply bg-black text-gray-200;
+        }
+        /* Custom scrollbar for better aesthetics */
+        ::-webkit-scrollbar {
+            width: 8px;
+        }
+        ::-webkit-scrollbar-thumb {
+            background: #4b5563; /* Tailwind gray-600 */
+            border-radius: 4px;
+        }
+        ::-webkit-scrollbar-thumb:hover {
+            background: #6b7280; /* Tailwind gray-700 */
+        }
+        
+        /* Theming based on logo.jpg: Blue (Primary) and Amber/Gold (Accent) */
+        
+        /* 1. Positive State (Green - Highly Visible for Gains) */
+        .positive {
+            @apply text-green-500; 
+        }
+
+        /* 2. Negative State (Red - Highly Visible for Losses) */
+        .negative {
+            @apply text-red-500; 
+        }
+        
+        /* 3. Primary UI Color (Blue - for buttons, links, highlights) */
+        .primary-color {
+            @apply text-blue-500;
+        }
+        .primary-bg {
+            @apply bg-blue-600 hover:bg-blue-700;
+        }
+        .primary-border {
+            @apply border-blue-500;
+        }
+
+        /* 4. Neutral State (Dark Gray for readability on white cards) */
+        .neutral {
+            @apply text-gray-900;
+        }
+
+        .card {
+            @apply bg-white p-4 sm:p-6 rounded-xl shadow-lg border border-gray-300 transition duration-300 hover:border-blue-500;
+        }
+        .address-text {
+            @apply text-xs font-mono truncate max-w-[150px] sm:max-w-full inline-block;
+        }
+
+        /* Chart Canvas Styling */
+        #tradingview-chart-container {
+            background-color: #1f2937; 
+            display: block;
+            height: 100%; 
+            width: 100%; 
+        }
+        
+        .table-header-text {
+            @apply text-gray-900;
+        }
+        
+        /* New: Alert Bar Style */
+        .alert-bar {
+            @apply fixed top-0 left-0 right-0 z-50 p-4 text-center text-sm font-medium transition-all duration-500 ease-in-out;
+        }
+    </style>
+    
+    <script id="tradingview-core-script" src="https://s3.tradingview.com/tv.js" async></script>
+
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInWithEmailAndPassword, createUserWithEmailAndPassword, signOut, onAuthStateChanged, signInWithCustomToken, signInAnonymously } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, doc, setDoc, getDoc, onSnapshot } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+        import { setLogLevel } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+        
+        // CRITICAL: Set the log level to Debug to help monitor Firestore activity
+        setLogLevel('Debug');
+
+        // Global variables provided by the environment
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+        const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {};
+        const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? initialAuthToken : null; // Corrected initialAuthToken usage
+
+        // Initialize Firebase and expose services globally
+        window.app = initializeApp(firebaseConfig);
+        window.db = getFirestore(window.app);
+        window.auth = getAuth(window.app);
+        
+        // CRITICAL: Firebase Authentication and Persistence Setup
+        async function setupAuth() {
+            // Use the provided token for seamless login, or fall back to anonymous if not present
+            try {
+                if (initialAuthToken) {
+                    await signInWithCustomToken(window.auth, initialAuthToken);
+                } else {
+                    await signInAnonymously(window.auth);
+                }
+                console.log("Firebase Auth initialized successfully.");
+            } catch (error) {
+                console.error("Firebase Auth failed during initial sign-in:", error);
+                // Fallback: continue with the application even if auth fails
+            }
+        }
+        
+        // Start the auth process and listen for state changes
+        setupAuth();
+        
+        // Set up Auth State Listener
+        onAuthStateChanged(window.auth, (user) => {
+            window.isAuthReady = true;
+            if (user) {
+                // User is signed in. This handles the 'seamless' part.
+                window.userId = user.uid;
+                window.isLoggedIn = true;
+                console.log(`User logged in with UID: ${window.userId}`);
+                // Load user data (portfolio, settings) after successful login
+                window.loadUserSettings(); 
+            } else {
+                // User is signed out or anonymous.
+                window.userId = null;
+                window.isLoggedIn = false;
+                window.currentFilterType = 'All'; // Reset UI state on logout
+                window.clientDeposit = 0; // Reset deposit on logout
+                window.userName = 'Guest'; // Reset profile
+                window.nickName = '';
+                window.updateAuthUI();
+                window.updatePortfolioUI(); // Re-render portfolio buttons
+                window.switchView('Overview');
+                console.log("User signed out or anonymous.");
+            }
+        });
+        
+        // Expose Firebase functions globally for use in regular script tags
+        window.firebaseLogin = async (email, password) => {
+            try {
+                // First try to sign in
+                await signInWithEmailAndPassword(window.auth, email, password);
+                document.getElementById('login-message').classList.add('hidden');
+            } catch (error) {
+                // If sign-in fails, assume they need to register
+                if (error.code === 'auth/user-not-found' || error.code === 'auth/wrong-password') {
+                    try {
+                        // Try to register/create account instead
+                        await createUserWithEmailAndPassword(window.auth, email, password);
+                        document.getElementById('login-message').classList.add('hidden');
+                        // Set default profile name on new registration
+                        window.userName = email.split('@')[0];
+                        window.nickName = '';
+                        window.saveDashboardState();
+                    } catch (regError) {
+                        // Registration failed (e.g., weak password, email already in use)
+                        document.getElementById('login-message').textContent = 'Login failed. User not found, or registration failed (weak password/email exists).';
+                        document.getElementById('login-message').classList.remove('hidden');
+                        console.error("Login/Registration failed:", regError.message);
+                    }
+                } else {
+                    // Other errors (e.g., network issues)
+                    document.getElementById('login-message').textContent = `Login error: ${error.message}`;
+                    document.getElementById('login-message').classList.remove('hidden');
+                    console.error("Login error:", error.message);
+                }
+            }
+        };
+
+        window.firebaseLogout = async () => {
+            await signOut(window.auth);
+        };
+        
+        // Firestore Path Generator (Private Data for User Settings)
+        window.getUserSettingsRef = (settingName) => {
+            if (!window.userId) return null;
+            // Path: /artifacts/{appId}/users/{userId}/settings/{settingName}
+            return doc(window.db, `artifacts/${appId}/users/${window.userId}/settings`, settingName);
+        };
+        
+        // NEW: Firestore Path for Trades
+        window.getUserTradesRef = (tradeId) => {
+            if (!window.userId) return null;
+            return doc(window.db, `artifacts/${appId}/users/${window.userId}/trades`, tradeId);
+        };
+        
+        // Function to save the current filter state, deposit amount, and basic profile info
+        window.saveDashboardState = async () => {
+            if (window.isLoggedIn && window.userId) {
+                try {
+                    const settingsRef = window.getUserSettingsRef('dashboard_state');
+                    if (settingsRef) {
+                        await setDoc(settingsRef, { 
+                            filterType: window.currentFilterType, 
+                            lastSeen: new Date(),
+                            clientDeposit: window.clientDeposit,
+                            currentBalance: window.clientPortfolio.currentBalance,
+                            accumulatedProfit: window.clientPortfolio.accumulatedProfit,
+                            // Profile Information
+                            profile: {
+                                userName: window.userName,
+                                nickName: window.nickName,
+                            }
+                        }, { merge: true });
+                        console.log("Dashboard state saved. Deposit:", window.clientDeposit, "Balance:", window.clientPortfolio.currentBalance);
+                    }
+                } catch (error) {
+                    console.error("Error saving dashboard state:", error);
+                }
+            }
+        };
+
+        // Function to load user settings and set up real-time listener
+        window.loadUserSettings = () => {
+             if (window.isLoggedIn && window.userId) {
+                const settingsRef = window.getUserSettingsRef('dashboard_state');
+                if (settingsRef) {
+                    // Use onSnapshot for real-time loading and persistence
+                    onSnapshot(settingsRef, (docSnapshot) => {
+                        if (docSnapshot.exists()) {
+                            const data = docSnapshot.data();
+                            const loadedFilter = data.filterType || 'All';
+                            
+                            // Load financial state
+                            window.clientDeposit = data.clientDeposit || 0;
+                            window.clientPortfolio.currentBalance = data.currentBalance || window.clientDeposit;
+                            window.clientPortfolio.accumulatedProfit = data.accumulatedProfit || 0;
+                            
+                            // Load Profile
+                            window.userName = data.profile?.userName || 'Client';
+                            window.nickName = data.profile?.nickName || '';
+                            
+                            // Only switch view if the filter has actually changed
+                            if (window.currentFilterType !== loadedFilter) {
+                                window.switchView(loadedFilter);
+                            }
+                            if (window.clientDeposit > 0) {
+                                showDepositAlert(window.clientDeposit);
+                                // CRITICAL: Run daily interest update check
+                                checkAndApplyDailyInterest(data.lastSeen.toDate()); 
+                            }
+                            console.log("User settings loaded/updated. Deposit:", window.clientDeposit);
+                        } else {
+                            // If no settings exist, save the default state
+                            window.clientDeposit = 0;
+                            if (window.auth.currentUser.email) {
+                                window.userName = window.auth.currentUser.email.split('@')[0];
+                            } else {
+                                window.userName = 'Client'; // Fallback for token login without email
+                            }
+                            window.nickName = '';
+                            window.saveDashboardState(); 
+                            window.switchView('Overview');
+                        }
+                        window.updateAuthUI();
+                        window.updatePortfolioUI();
+                    }, (error) => {
+                        console.error("Error listening to user settings:", error);
+                        window.updateAuthUI();
+                    });
+                }
+            }
+        };
+
+        // NEW: 24-HOUR PROFIT CHECK
+        function checkAndApplyDailyInterest(lastSeenDate) {
+            const now = new Date();
+            const timeSinceLastSeen = now.getTime() - lastSeenDate.getTime();
+            const oneDay = 24 * 60 * 60 * 1000;
+            
+            if (timeSinceLastSeen >= oneDay) {
+                const daysPassed = Math.floor(timeSinceLastSeen / oneDay);
+                const dailyRate = window.clientPortfolio.dailyRate; // 0.016
+                
+                for (let i = 0; i < daysPassed; i++) {
+                    const interestAmount = window.clientPortfolio.currentBalance * dailyRate;
+                    window.clientPortfolio.currentBalance += interestAmount;
+                    window.clientPortfolio.accumulatedProfit += interestAmount;
+                    console.log(`Applied ${dailyRate * 100}% daily interest for day ${i + 1}.`);
+                }
+                
+                // Save the updated state and new lastSeen time
+                window.saveDashboardState(); 
+            }
+        }
+    </script>
+</head>
+<body class="min-h-screen">
+    
+    <div id="deposit-alert" class="alert-bar bg-blue-500 text-white transform -translate-y-full shadow-lg hidden">
+        <p class="flex items-center justify-center">
+            <svg class="w-5 h-5 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>
+            <span id="alert-message">Deposit of $X,XXX.XX detected! Your trading is now active.</span>
+            <button onclick="hideDepositAlert()" class="ml-4 text-white hover:text-gray-100 font-bold">&times;</button>
+        </p>
+    </div>
+
+    <div id="dashboard-content">
+        <header class="bg-gray-900 sticky top-0 z-10 shadow-xl border-b border-blue-700">
+            <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-3 flex flex-col md:flex-row justify-between items-center">
+                <div class="flex items-center mb-3 md:mb-0">
+                    <img src="logo.png" alt="BlueCrest Markets Logo" class="h-8 w-8 mr-3">
+                    <h1 class="text-2xl font-bold text-blue-400">BlueCrest Markets</h1>
+                </div>
+                
+                <div class="w-full md:w-1/3 mx-4">
+                    <input type="text" id="asset-search-input" onkeyup="filterAssetsBySearch()" placeholder="Search for stocks, crypto, forex..."
+                           class="w-full px-4 py-2 bg-gray-800 text-gray-200 rounded-full border border-gray-700 focus:outline-none focus:border-blue-500">
+                </div>
+
+                <nav class="hidden md:flex space-x-6 text-sm font-medium">
+                    <a href="javascript:void(0)" onclick="switchView('Overview')" id="nav-overview" class="primary-color hover:text-blue-400 font-bold border-b-2 primary-border">Overview</a>
+                    <a href="javascript:void(0)" onclick="switchView('Portfolio')" id="nav-portfolio" class="text-gray-200 hover:text-blue-400">Portfolio</a>
+                    <a href="javascript:void(0)" onclick="switchView('Stocks')" id="nav-stocks" class="text-gray-200 hover:text-blue-400">Stocks</a>
+                    <a href="javascript:void(0)" onclick="switchView('Crypto')" id="nav-crypto" class="text-gray-200 hover:text-blue-400">Crypto</a>
+                    <a href="javascript:void(0)" onclick="switchView('Forex')" id="nav-forex" class="text-gray-200 hover:text-blue-400">Forex</a>
+                </nav>
+                <div class="relative flex space-x-3 items-center mt-3 md:mt-0">
+                    <button id="profile-button" onclick="openProfileModal()" 
+                        class="bg-gray-700 hover:bg-gray-600 text-gray-200 font-semibold py-2 px-4 rounded-lg text-sm transition duration-150 shadow-md flex items-center hidden">
+                        <svg class="w-4 h-4 mr-1" fill="currentColor" viewBox="0 0 20 20" xmlns="http://www.w3.org/2000/svg"><path fill-rule="evenodd" d="M10 9a3 3 0 100-6 3 3 0 000 6zm-7 9a7 7 0 1114 0H3z" clip-rule="evenodd"></path></svg>
+                        <span id="profile-display-name">Profile</span>
+                    </button>
+                    
+                    <button onclick="openApiConfigModal()" class="primary-bg text-white font-semibold py-2 px-4 rounded-lg text-sm transition duration-150 shadow-md">
+                        Configure API
+                    </button>
+                    <button id="auth-button" onclick="handleAuthAction()" 
+                        class="primary-bg text-white font-semibold py-2 px-4 rounded-lg text-sm transition duration-150 shadow-md">
+                        Client Login
+                    </button>
+                </div>
+            </div>
+        </header>
+    
+        <main class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 space-y-12">
+    
+            <div id="market-view">
+                <section id="overview" class="grid grid-cols-1 md:grid-cols-3 gap-6">
+                    <div id="market-overview-1" class="card">
+                        <h2 class="text-lg font-medium text-gray-700 mb-2">S&P 500 Index</h2>
+                        <p class="text-3xl font-bold neutral" id="sp500-price">0.00</p>
+                        <p class="text-sm mt-1 flex items-center">
+                            <span id="sp500-change" class="font-semibold positive">0.00 (0.00%)</span>
+                            <svg id="sp500-icon" class="w-4 h-4 ml-1 positive" fill="currentColor" viewBox="0 0 20 20"><path d="M10 14l-5-5h10l-5 5z"/></svg>
+                        </p>
+                    </div>
+                    <div id="market-overview-2" class="card">
+                        <h2 class="text-lg font-medium text-gray-700 mb-2">Bitcoin (BTC)</h2>
+                        <p class="text-3xl font-bold neutral" id="btc-price">0.00</p>
+                        <p class="text-sm mt-1 flex items-center">
+                            <span id="btc-change" class="font-semibold negative">0.00 (0.00%)</span>
+                            <svg id="btc-icon" class="w-4 h-4 ml-1 negative" fill="currentColor" viewBox="0 0 20 20"><path d="M10 6l5 5H5l5-5z"/></svg>
+                        </p>
+                    </div>
+                    <div id="market-overview-3" class="card">
+                        <h2 class="text-lg font-medium text-gray-700 mb-2">EUR/USD Pair</h2>
+                        <p class="text-3xl font-bold neutral" id="eurusd-price">0.0000</p>
+                        <p class="text-sm mt-1 flex items-center">
+                            <span id="eurusd-change" class="font-semibold positive">0.0000 (0.00%)</span>
+                            <svg id="eurusd-icon" class="w-4 h-4 ml-1 positive" fill="currentColor" viewBox="0 0 20 20"><path d="M10 14l-5-5h10l-5 5z"/></svg>
+                        </p>
+                    </div>
+                </section>
+        
+                <section id="trending-assets">
+                    <h2 class="text-2xl font-extrabold mb-4 text-white border-b border-gray-700 pb-2">Top Movers & Watchlist</h2>
+                    <div class="overflow-x-auto card p-0">
+                        <table class="min-w-full divide-y divide-gray-300">
+                            <thead class="bg-gray-200">
+                                <tr>
+                                    <th scope="col" class="px-6 py-3 text-left text-xs font-medium table-header-text uppercase tracking-wider">Asset</th>
+                                    <th scope="col" class="px-6 py-3 text-left text-xs font-medium table-header-text uppercase tracking-wider">Price</th>
+                                    <th scope="col" class="px-6 py-3 text-left text-xs font-medium table-header-text uppercase tracking-wider">24h Change (%)</th>
+                                    <th scope="col" class="px-6 py-3 text-left text-xs font-medium table-header-text uppercase tracking-wider">Volume (24h)</th>
+                                    <th scope="col" class="px-6 py-3 text-left text-xs font-medium table-header-text uppercase tracking-wider">Action</th>
+                                    <th scope="col" class="px-6 py-3 text-left text-xs font-medium table-header-text uppercase tracking-wider">Chart</th>
+                                </tr>
+                            </thead>
+                            <tbody id="asset-table-body" class="divide-y divide-gray-200 bg-white">
+                                </tbody>
+                        </table>
+                    </div>
+                </section>
+        
+                <section id="detail-views" class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+                    <div id="stocks" class="lg:col-span-1 card">
+                        <h2 class="text-2xl font-semibold text-gray-900 mb-4">Stock Highlights</h2>
+                        <ul id="stock-list" class="space-y-3"></ul>
+                        <a href="javascript:void(0)" onclick="switchView('Stocks')" class="mt-4 block text-center primary-color hover:text-blue-400 text-sm font-medium">View All Stocks</a>
+                    </div>
+        
+                    <div id="crypto" class="lg:col-span-1 card">
+                        <h2 class="text-2xl font-semibold text-gray-900 mb-4">Crypto Top Movers & Tokens</h2>
+                        <div class="space-y-4">
+                            <div>
+                                <h3 class="text-lg font-medium text-gray-700 mb-2 border-b pb-1">Top Movers</h3>
+                                <ul id="crypto-list-movers" class="space-y-3"></ul>
+                            </div>
+                            <div>
+                                <h3 class="text-lg font-medium text-gray-700 mb-2 border-b pb-1">Popular Tokens</h3>
+                                <ul id="crypto-list-tokens" class="space-y-3"></ul>
+                            </div>
+                        </div>
+                        <a href="javascript:void(0)" onclick="switchView('Crypto')" class="mt-4 block text-center primary-color hover:text-blue-400 text-sm font-medium">View All Crypto</a>
+                    </div>
+        
+                    <div id="forex" class="lg:col-span-1 card">
+                        <h2 class="text-2xl font-semibold text-gray-900 mb-4">Forex Pairs</h2>
+                        <ul id="forex-list" class="space-y-3"></ul>
+                        <a href="javascript:void(0)" onclick="switchView('Forex')" class="mt-4 block text-center primary-color hover:text-blue-400 text-sm font-medium">View All Pairs</a>
+                    </div>
+                </section>
+                
+                <section id="broker-status" class="card">
+                    <h2 class="text-2xl font-semibold text-gray-900 mb-4 flex items-center">
+                        Broker & API Connection Status
+                        <span id="connection-status-dot" class="ml-3 w-3 h-3 rounded-full bg-red-500 animate-pulse" title="Disconnected"></span>
+                    </h2>
+                    <div class="space-y-4 text-gray-700">
+                        <ul class="list-none space-y-2 border-b border-gray-300 pb-3">
+                            <li class="flex justify-between items-center">
+                                <strong class="text-gray-900">Firebase User ID:</strong> <span id="firebase-uid-status" class="text-sm text-red-600 font-semibold">Loading...</span>
+                            </li>
+                            <li class="flex justify-between items-center">
+                                <strong class="text-gray-900">Current Broker:</strong> <span id="broker-name">BlueCrest Broker</span>
+                            </li>
+                            <li class="flex justify-between items-center">
+                                <strong class="text-gray-900">API Key Status:</strong> <span id="api-status" class="text-red-600 font-semibold">Not Configured</span>
+                            </li>
+                            <li class="flex justify-between items-center">
+                                <strong class="text-gray-900">Account Type:</strong> Demo Account
+                            </li>
+                            <li class="flex justify-between items-center">
+                                <strong class="text-gray-900">Leverage:</strong> 1:10 (Stocks) / 1:500 (Forex)
+                            </li>
+                        </ul>
+                        
+                        <div>
+                            <h3 class="text-lg font-semibold primary-color mb-2 border-b border-gray-300 pb-1">Investment Wallet Addresses (Internal)</h3>
+                            <p class="text-xs text-gray-600 mb-2">Addresses used for fund deposits and investment tracking.</p>
+                            <ul class="list-none space-y-2">
+                                <li class="flex flex-col sm:flex-row sm:justify-between sm:items-center p-2 bg-gray-100 rounded-lg">
+                                    <strong class="text-gray-900 text-sm">Bitcoin (BTC):</strong> 
+                                    <span class="address-text text-yellow-700 mt-1 sm:mt-0" title="bc1qz5hjcxzywy2vgu83zy9qnewq6cger0r6yulqa3">
+                                        bc1qz5hjcxzywy2vgu83zy9qnewq6cger0r6yulqa3
+                                    </span>
+                                </li>
+                                <li class="flex flex-col sm:flex-row sm:justify-between sm:items-center p-2 bg-gray-100 rounded-lg">
+                                    <strong class="text-gray-900 text-sm">Ethereum (ETH):</strong> 
+                                    <span class="address-text text-purple-700 mt-1 sm:mt-0" title="0xc60ada395c4666edd4361e604940db051c742ecb">
+                                        0xc60ada395c4666edd4361e604940db051c742ecb
+                                    </span>
+                                </li>
+                            </ul>
+                        </div>
+                    </div>
+                    <button onclick="openApiConfigModal()" class="mt-4 primary-bg text-white font-semibold py-2 px-4 rounded-lg text-sm transition duration-150 shadow-md">
+                        Configure Broker Details
+                    </button>
+                </section>
+            </div>
+            
+            <section id="portfolio-view" class="hidden space-y-8">
+                <h2 id="portfolio" class="text-2xl font-extrabold mb-4 text-white border-b border-blue-700 pb-2 flex items-center">
+                    <span class="mr-2 text-blue-400">|</span> Client Portfolio Summary
+                </h2>
+                
+                <div id="portfolio-actions" class="flex space-x-4">
+                    <button onclick="switchView('InvestmentPlans')" class="bg-indigo-600 hover:bg-indigo-700 text-white font-semibold py-2 px-6 rounded-lg text-lg transition duration-150 shadow-md">
+                        Invest & Earn
+                    </button>
+                    <button onclick="switchView('Overview')" class="primary-bg text-white font-semibold py-2 px-6 rounded-lg text-lg transition duration-150 shadow-md">
+                        Trade
+                    </button>
+                </div>
+                
+                <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
+                    <div class="card bg-blue-50 primary-border">
+                        <h3 class="text-lg font-medium text-blue-700 mb-2">Total Balance</h3>
+                        <p class="text-3xl font-bold text-gray-900" id="total-invested">$0.00</p>
+                        <p class="text-sm text-blue-600 mt-1">Your capital commitment</p>
+                    </div>
+                    <div class="card bg-blue-50 primary-border">
+                        <h3 class="text-lg font-medium text-blue-700 mb-2">Current Balance</h3>
+                        <p class="text-3xl font-bold neutral" id="current-balance">$0.00</p>
+                        <p class="text-sm text-blue-600 mt-1">Real-time asset value + profit</p>
+                    </div>
+                    <div class="card">
+                        <h3 class="text-lg font-medium text-gray-700 mb-2">Daily Interest (1.6%)</h3>
+                        <p class="text-3xl font-bold neutral" id="daily-profit">$0.00</p>
+                        <p class="text-sm text-gray-600 mt-1">Gains calculated on deposited amount</p>
+                    </div>
+                </div>
+
+                <div id="open-trades-card" class="card p-0 mt-8">
+                    <h3 class="text-xl font-semibold text-gray-900 p-4 border-b border-gray-200">Open Trades</h3>
+                    <div class="overflow-x-auto">
+                        <table class="min-w-full divide-y divide-gray-300">
+                            <thead class="bg-gray-200">
+                                <tr>
+                                    <th scope="col" class="px-6 py-3 text-left text-xs font-medium table-header-text uppercase tracking-wider">Asset</th>
+                                    <th scope="col" class="px-6 py-3 text-left text-xs font-medium table-header-text uppercase tracking-wider">Type</th>
+                                    <th scope="col" class="px-6 py-3 text-left text-xs font-medium table-header-text uppercase tracking-wider">Size</th>
+                                    <th scope="col" class="px-6 py-3 text-left text-xs font-medium table-header-text uppercase tracking-wider">Entry Price</th>
+                                    <th scope="col" class="px-6 py-3 text-left text-xs font-medium table-header-text uppercase tracking-wider">Current P&L</th>
+                                    <th scope="col" class="px-6 py-3 text-left text-xs font-medium table-header-text uppercase tracking-wider">Action</th>
+                                </tr>
+                            </thead>
+                            <tbody id="open-trades-body" class="divide-y divide-gray-200 bg-white">
+                                <tr>
+                                    <td class="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">BTCUSD</td>
+                                    <td class="px-6 py-4 whitespace-nowrap">
+                                        <span class="px-2 inline-flex text-xs leading-5 font-semibold rounded-full bg-green-100 text-green-800">Buy</span>
+                                    </td>
+                                    <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-600">0.1 BTC</td>
+                                    <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-600">64,500.00</td>
+                                    <td class="px-6 py-4 whitespace-nowrap text-sm font-bold positive">+$500.00</td>
+                                    <td class="px-6 py-4 whitespace-nowrap">
+                                        <button onclick="executeTrade('BTCUSD', 'Sell', 0.1, 'Close')" class="text-red-600 hover:text-red-700 text-xs font-bold">Close</button>
+                                    </td>
+                                </tr>
+                                <tr>
+                                    <td class="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">AAPL</td>
+                                    <td class="px-6 py-4 whitespace-nowrap">
+                                        <span class="px-2 inline-flex text-xs leading-5 font-semibold rounded-full bg-red-100 text-red-800">Sell</span>
+                                    </td>
+                                    <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-600">50 Shares</td>
+                                    <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-600">178.50</td>
+                                    <td class="px-6 py-4 whitespace-nowrap text-sm font-bold negative">-$175.00</td>
+                                    <td class="px-6 py-4 whitespace-nowrap">
+                                        <button onclick="executeTrade('AAPL', 'Buy', 50, 'Close')" class="text-red-600 hover:text-red-700 text-xs font-bold">Close</button>
+                                    </td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+
+            </section>
+            
+            <section id="investment-plans-view" class="hidden space-y-6">
+                <h2 class="text-2xl font-extrabold mb-4 text-white border-b border-indigo-700 pb-2 flex items-center">
+                    <span class="mr-2 text-indigo-400">|</span> Select Your Investment Plan
+                </h2>
+                
+                <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+                    <div class="card bg-indigo-50 border-indigo-500 text-center">
+                        <h3 class="text-2xl font-bold text-indigo-700 mb-2">$200 Plan</h3>
+                        <p class="text-sm text-gray-600 mb-4">Start your journey</p>
+                        <button onclick="setDepositAmount(200)" class="w-full primary-bg text-white font-semibold py-2 rounded-lg transition duration-150">Select</button>
+                    </div>
+                    <div class="card bg-indigo-50 border-indigo-500 text-center">
+                        <h3 class="text-2xl font-bold text-indigo-700 mb-2">$500 Plan (NEW)</h3>
+                        <p class="text-sm text-gray-600 mb-4">Foundation Builder</p>
+                        <button onclick="setDepositAmount(500)" class="w-full primary-bg text-white font-semibold py-2 rounded-lg transition duration-150">Select</button>
+                    </div>
+                    <div class="card bg-indigo-50 border-indigo-500 text-center">
+                        <h3 class="text-2xl font-bold text-indigo-700 mb-2">$1,000 Plan</h3>
+                        <p class="text-sm text-gray-600 mb-4">Popular choice</p>
+                        <button onclick="setDepositAmount(1000)" class="w-full primary-bg text-white font-semibold py-2 rounded-lg transition duration-150">Select</button>
+                    </div>
+                    <div class="card bg-indigo-50 border-indigo-500 text-center">
+                        <h3 class="text-2xl font-bold text-indigo-700 mb-2">$2,000 Plan (NEW)</h3>
+                        <p class="text-sm text-gray-600 mb-4">Accelerated Growth</p>
+                        <button onclick="setDepositAmount(2000)" class="w-full primary-bg text-white font-semibold py-2 rounded-lg transition duration-150">Select</button>
+                    </div>
+                    <div class="card bg-indigo-50 border-indigo-500 text-center">
+                        <h3 class="text-2xl font-bold text-indigo-700 mb-2">$5,000 Plan (NEW)</h3>
+                        <p class="text-sm text-gray-600 mb-4">Pro Trader</p>
+                        <button onclick="setDepositAmount(5000)" class="w-full primary-bg text-white font-semibold py-2 rounded-lg transition duration-150">Select</button>
+                    </div>
+                    <div class="card bg-indigo-50 border-indigo-500 text-center">
+                        <h3 class="text-2xl font-bold text-indigo-700 mb-2">$10,000 Plan</h3>
+                        <p class="text-sm text-gray-600 mb-4">Accelerated earnings</p>
+                        <button onclick="setDepositAmount(10000)" class="w-full primary-bg text-white font-semibold py-2 rounded-lg transition duration-150">Select</button>
+                    </div>
+                    <div class="card bg-indigo-50 border-indigo-500 text-center">
+                        <h3 class="text-2xl font-bold text-indigo-700 mb-2">$100,000 Plan</h3>
+                        <p class="text-sm text-gray-600 mb-4">BlueCrest VIP access</p>
+                        <button onclick="setDepositAmount(100000)" class="w-full primary-bg text-white font-semibold py-2 rounded-lg transition duration-150">Select</button>
+                    </div>
+                </div>
+                
+                <div class="card mt-8">
+                    <h3 class="text-xl font-semibold text-gray-900 mb-4">Investment Method</h3>
+                    <p class="text-gray-700 mb-4">Select your preferred method to complete your deposit for the chosen plan.</p>
+                    
+                    <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+                        <button onclick="openBankDepositModal()" class="flex flex-col items-center justify-center p-6 bg-blue-100 hover:bg-blue-200 border-2 primary-border rounded-xl transition duration-150 shadow-md">
+                            <strong class="text-lg text-blue-800">Bank/Card Deposit (USD)</strong>
+                            <p class="text-sm text-gray-600 mt-1">Wire transfer or ACH/Card</p>
+                        </button>
+                        
+                        <button onclick="openCryptoDepositModal()" class="flex flex-col items-center justify-center p-6 bg-yellow-100 hover:bg-yellow-200 border-2 border-amber-500 rounded-xl transition duration-150 shadow-md">
+                            <strong class="text-lg text-amber-800">Crypto Deposit</strong>
+                            <p class="text-sm text-gray-600 mt-1">BTC, ETH, USDT accepted</p>
+                        </button>
+                    </div>
+                </div>
+                
+            </section>
+            </main>
+    
+        <footer class="bg-gray-900 mt-12 py-10 border-t border-blue-700">
+            <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+                <div class="grid grid-cols-1 md:grid-cols-3 gap-8 text-gray-400">
+
+                    <div class="space-y-3">
+                        <h3 class="text-3xl font-bold text-blue-400 mb-4">BlueCrest Markets</h3>
+                        <p class="text-sm">
+                            &copy; 2025 BlueCrest Markets. All rights reserved.
+                        </p>
+                        <p class="text-xs mt-1">
+                            Powered by Firebase. Market data simulation.
+                        </p>
+                    </div>
+
+                    <div>
+                        <h4 class="text-lg font-semibold text-white mb-4 border-b border-gray-700 pb-1">About Us</h4>
+                        <p class="text-sm">
+                            At **BlueCrest Markets**, we believe trading should be about **confidence, not confusion**. We built this platform to be the calm center of your investment journey. We're not just a dashboard; we're your partner, dedicated to providing the clarity and tools you need to build your financial future, one smart trade at a time.
+                        </p>
+                    </div>
+
+                    <div>
+                        <h4 class="text-lg font-semibold text-white mb-4 border-b border-gray-700 pb-1">Contact Us</h4>
+                        <p class="text-sm mb-4">We're here to help you navigate the markets with confidence. Reach out anytime!</p>
+                        <div class="flex flex-col sm:flex-row space-y-3 sm:space-y-0 sm:space-x-4">
+                            <a href="mailto:support@bluecrestmarkets.com" class="primary-bg text-white font-semibold py-2 px-4 rounded-lg text-sm transition duration-150 flex items-center justify-center">
+                                <svg class="w-5 h-5 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 8l7.89 5.26a2 2 0 002.22 0L21 8M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z"></path></svg>
+                                Email Us
+                            </a>
+                            <a href="https://instagram.com/bluecrestmarkets" target="_blank" class="bg-pink-600 hover:bg-pink-700 text-white font-semibold py-2 px-4 rounded-lg text-sm transition duration-150 flex items-center justify-center">
+                                <svg class="w-5 h-5 mr-2" fill="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d="M7.5 6.5C8.328 6.5 9 7.172 9 8C9 8.828 8.328 9.5 7.5 9.5C6.672 9.5 6 8.828 6 8C6 7.172 6.672 6.5 7.5 6.5ZM12 7C9.25 7 7 9.25 7 12C7 14.75 9.25 17 12 17C14.75 17 17 14.75 17 12C17 9.25 14.75 7 12 7ZM12 15.6C10.012 15.6 8.4 13.988 8.4 12C8.4 10.012 10.012 8.4 12 8.4C13.988 8.4 15.6 10.012 15.6 12C15.6 13.988 13.988 15.6 12 15.6Z"/><path fill-rule="evenodd" d="M12 2C6.48 2 2 6.48 2 12C2 17.52 6.48 22 12 22C17.52 22 22 17.52 22 12C22 6.48 17.52 2 12 2ZM18.5 7.25C18.5 7.664 18.164 8 17.75 8H6.25C5.836 8 5.5 7.664 5.5 7.25C5.5 6.836 5.836 6.5 6.25 6.5H17.75C18.164 6.5 18.5 6.836 18.5 7.25ZM18.5 16.75C18.5 17.164 18.164 17.5 17.75 17.5H6.25C5.836 17.5 5.5 17.164 5.5 16.75C5.5 16.336 5.836 16 6.25 16H17.75C18.164 16 18.5 16.336 18.5 16.75Z" clip-rule="evenodd"/></svg>
+                                Instagram
+                            </a>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </footer>
+    </div>
+
+    <div id="auth-modal" class="hidden fixed inset-0 bg-gray-900 bg-opacity-75 z-50 flex items-center justify-center p-4">
+        <div class="card w-full max-w-md p-8 relative bg-white">
+            <button onclick="closeAuthModal()" class="absolute top-3 right-3 text-gray-600 hover:text-gray-900 transition duration-150">
+                <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path></svg>
+            </button>
+
+            <h2 class="text-3xl font-bold text-center text-blue-600 mb-6">Client Login / Register</h2>
+            <form id="login-form">
+                <p class="text-center text-gray-700 mb-4">Sign in or create a new account to access portfolio features.</p>
+                <div class="mb-4">
+                    <label for="username" class="block text-sm font-medium text-gray-700 mb-1">Email</label>
+                    <input type="email" id="username" name="username" required 
+                           class="w-full px-3 py-2 border border-gray-400 bg-gray-50 text-gray-900 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500" 
+                           placeholder="Enter your email" value="test@example.com">
+                </div>
+                <div class="mb-6">
+                    <label for="password" class="block text-sm font-medium text-gray-700 mb-1">Password</label>
+                    <input type="password" id="password" name="password" required 
+                           class="w-full px-3 py-2 border border-gray-400 bg-gray-50 text-gray-900 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500" 
+                           placeholder="••••••••" value="password123">
+                </div>
+                <button type="submit" class="w-full primary-bg text-white font-semibold py-2 rounded-lg transition duration-150 shadow-md">
+                    Sign In / Register
+                </button>
+                <p id="login-message" class="mt-4 text-center text-sm text-red-600 hidden">Error: Invalid credentials or registration failed.</p>
+                <p class="mt-4 text-center text-xs text-gray-500">
+                    *The Firebase sign-in process is now active. Your settings and profile will be persisted.*
+                </p>
+            </form>
+        </div>
+    </div>
+    
+    <div id="profile-modal" class="hidden fixed inset-0 bg-gray-900 bg-opacity-75 z-50 flex items-center justify-center p-4">
+        <div class="card w-full max-w-md p-8 relative bg-white">
+            <button onclick="closeProfileModal()" class="absolute top-3 right-3 text-gray-600 hover:text-gray-900 transition duration-150">
+                <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path></svg>
+            </button>
+
+            <h2 class="text-3xl font-bold text-center text-blue-600 mb-6">Client Profile</h2>
+            <form id="profile-form" onsubmit="saveProfileSettings(event)">
+                <div class="mb-4">
+                    <label for="profile-username" class="block text-sm font-medium text-gray-700 mb-1">Username (Read-only)</label>
+                    <input type="text" id="profile-username" readonly disabled
+                           class="w-full px-3 py-2 border border-gray-300 bg-gray-200 text-gray-900 rounded-lg">
+                </div>
+                <div class="mb-6">
+                    <label for="profile-nickname" class="block text-sm font-medium text-gray-700 mb-1">Nickname</label>
+                    <input type="text" id="profile-nickname" name="nickname"
+                           class="w-full px-3 py-2 border border-gray-400 bg-gray-50 text-gray-900 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500" 
+                           placeholder="Enter a nickname">
+                </div>
+                <button type="submit" class="w-full primary-bg text-white font-semibold py-2 rounded-lg transition duration-150 shadow-md">
+                    Save Profile
+                </button>
+            </form>
+        </div>
+    </div>
+
+    <div id="chart-modal" class="hidden fixed inset-0 bg-gray-900 bg-opacity-90 z-50 flex items-center justify-center p-4">
+        <div class="bg-gray-800 rounded-xl shadow-lg border border-gray-700 w-full max-w-6xl h-full sm:h-5/6 relative flex flex-col p-6">
+            <div class="flex justify-between items-center pb-4 border-b border-gray-700">
+                <h2 id="chart-title" class="text-2xl font-bold text-blue-400">Chart for [Symbol]</h2>
+                <button onclick="closeChartModal()" class="text-gray-400 hover:text-red-400 transition duration-150 p-2 rounded-full hover:bg-gray-700">
+                    <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path></svg>
+                </button>
+            </div>
+            
+            <div class="flex-grow w-full mt-4 overflow-hidden rounded-lg border border-gray-700">
+                <div id="tradingview-chart-container" class="flex items-center justify-center h-full text-gray-500 font-semibold">
+                    <svg class="animate-spin -ml-1 mr-3 h-5 w-5 text-blue-400" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                        <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                        <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                    </svg>
+                    Loading Chart Data...
+                </div>
+            </div>
+
+            <div class="pt-4 border-t border-gray-700 flex flex-col sm:flex-row justify-between items-center space-y-3 sm:space-y-0">
+                <p id="chart-asset-info" class="text-sm text-gray-400">Trading BTCUSD. Current Price: $65,000</p>
+                
+                <div class="flex items-center space-x-3">
+                    <label for="lot-size" class="text-sm text-gray-400">Lot Size:</label>
+                    <input type="number" id="lot-size" value="1.0" min="0.01" step="0.01"
+                           class="w-24 px-2 py-1 bg-gray-700 border border-gray-600 rounded-lg text-gray-200 text-sm focus:outline-none focus:border-blue-500">
+                    
+                    <button onclick="executeChartTrade('Buy')" 
+                        class="bg-green-600 hover:bg-green-700 text-white font-semibold py-2 px-4 rounded-lg text-sm transition duration-150 shadow-md">
+                        BUY
+                    </button>
+                    <button onclick="executeChartTrade('Sell')" 
+                        class="bg-red-600 hover:bg-red-700 text-white font-semibold py-2 px-4 rounded-lg text-sm transition duration-150 shadow-md">
+                        SELL
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <div id="bank-deposit-modal" class="hidden fixed inset-0 bg-gray-900 bg-opacity-75 z-50 flex items-center justify-center p-4">
+        <div class="card w-full max-w-lg p-8 relative bg-white">
+            <button onclick="closeBankDepositModal()" class="absolute top-3 right-3 text-gray-600 hover:text-gray-900 transition duration-150">
+                <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path></svg>
+            </button>
+
+            <h2 class="text-3xl font-bold text-center text-blue-600 mb-6">Bank Deposit Options</h2>
+            <p id="bank-deposit-message" class="text-center text-gray-700 mb-6">Selected plan amount: <strong class="text-xl text-blue-600">$1,000.00</strong></p>
+            
+            <div class="space-y-4">
+                <button onclick="alert('Simulated: Proceeding to secure card payment gateway.')" class="w-full flex items-center justify-center p-4 bg-blue-100 hover:bg-blue-200 border-2 primary-border rounded-xl transition duration-150 shadow-md">
+                    <svg class="w-6 h-6 mr-2 text-blue-600" fill="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2zm0 14h16V8H4v10z"/></svg>
+                    <strong class="text-lg text-blue-800">Pay with Card Payment</strong>
+                </button>
+                
+                <button onclick="showBankTransferDetails()" class="w-full flex items-center justify-center p-4 bg-blue-100 hover:bg-blue-200 border-2 primary-border rounded-xl transition duration-150 shadow-md">
+                    <svg class="w-6 h-6 mr-2 text-blue-600" fill="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d="M14 6v-3h-4v3h-4l6 6 6-6h-4zm-6 8h12v-2H8v2zm0 4h12v-2H8v2z"/></svg>
+                    <strong class="text-lg text-blue-800">Pay with Bank Transfer</strong>
+                </button>
+            </div>
+            
+            <div id="transfer-details" class="p-4 bg-gray-50 border border-gray-200 rounded-lg mt-6 hidden">
+                <h3 class="text-lg font-semibold text-gray-900 mb-2">Transfer Account Details</h3>
+                <p class="text-sm text-gray-700">Please initiate a transfer of <strong id="transfer-amount-display" class="text-blue-600">$1,000.00</strong> to the account below.</p>
+                <ul class="text-sm mt-3 space-y-1">
+                    <li><strong class="text-gray-800">Bank Name:</strong> Global Capital Bank</li>
+                    <li><strong class="text-gray-800">Account Name:</strong> BlueCrest Markets Holdings</li>
+                    <li><strong class="text-gray-800">Account Number:</strong> <code id="default-account-number" class="text-red-500">1234567890</code> <button onclick="alert('Simulated: Opening account details editor.')" class="ml-2 text-xs primary-color">(Edit)</button></li>
+                    <li><strong class="text-gray-800">SWIFT/IBAN:</strong> BCMSUS33</li>
+                </ul>
+                <button onclick="simulateDepositAndClose(window.clientDeposit)" class="w-full primary-bg text-white font-semibold py-2 rounded-lg transition duration-150 shadow-md mt-4">
+                    Confirm Transfer Sent (Simulate)
+                </button>
+            </div>
+            
+        </div>
+    </div>
+    
+    <div id="crypto-deposit-modal" class="hidden fixed inset-0 bg-gray-900 bg-opacity-75 z-50 flex items-center justify-center p-4">
+        <div class="card w-full max-w-lg p-8 relative bg-white">
+            <button onclick="closeCryptoDepositModal()" class="absolute top-3 right-3 text-gray-600 hover:text-gray-900 transition duration-150">
+                <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path></svg>
+            </button>
+
+            <h2 class="text-3xl font-bold text-center text-amber-600 mb-6">Crypto Deposit Details</h2>
+            <p class="text-center text-gray-700 mb-6">Select your preferred crypto and scan the QR code to deposit.</p>
+            
+            <div class="space-y-4">
+                <div class="p-3 bg-gray-100 rounded-lg border border-gray-300 flex justify-between items-start">
+                    <div>
+                        <strong class="block text-sm text-gray-900">Bitcoin (BTC) Address</strong>
+                        <code class="address-text text-yellow-700 break-words w-full block mt-1" id="btc-address">bc1qz5hjcxzywy2vgu83zy9qnewq6cger0r6yulqa3</code>
+                    </div>
+                    <img id="btc-qr" src="https://chart.googleapis.com/chart?cht=qr&chs=100x100&chl=bc1qz5hjcxzywy2vgu83zy9qnewq6cger0r6yulqa3" alt="BTC QR Code" class="w-20 h-20 border border-gray-400">
+                </div>
+                <div class="p-3 bg-gray-100 rounded-lg border border-gray-300 flex justify-between items-start">
+                    <div>
+                        <strong class="block text-sm text-gray-900">Ethereum (ETH) Address (ERC-20)</strong>
+                        <code class="address-text text-purple-700 break-words w-full block mt-1" id="eth-address">0xc60ada395c4666edd4361e604940db051c742ecb</code>
+                    </div>
+                    <img id="eth-qr" src="https://chart.googleapis.com/chart?cht=qr&chs=100x100&chl=0xc60ada395c4666edd4361e604940db051c742ecb" alt="ETH QR Code" class="w-20 h-20 border border-gray-400">
+                </div>
+                <div class="p-3 bg-gray-100 rounded-lg border border-gray-300 flex justify-between items-start">
+                    <div>
+                        <strong class="block text-sm text-gray-900">Tether (USDT) Address (ERC-20)</strong>
+                        <code class="address-text text-green-700 break-words w-full block mt-1" id="usdt-address">0xc60ada395c4666edd4361e604940db051c742ecb</code>
+                    </div>
+                    <img id="usdt-qr" src="https://chart.googleapis.com/chart?cht=qr&chs=100x100&chl=0xc60ada395c4666edd4361e604940db051c742ecb" alt="USDT QR Code" class="w-20 h-20 border border-gray-400">
+                </div>
+            </div>
+            
+            <p class="mt-4 text-center text-sm text-amber-600 font-medium">
+                Note: You can deposit any amount of your choice above $200.00. Select your investment plan from your Portfolio after your payment has been confirmed.
+            </p>
+            
+            <button onclick="simulateDepositAndClose(window.clientDeposit > 0 ? window.clientDeposit : 500)" class="w-full primary-bg text-white font-semibold py-2 rounded-lg transition duration-150 shadow-md mt-6">
+                Confirm Crypto Transfer (Simulate)
+            </button>
+        </div>
+    </div>
+
+
+    <script>
+        // --- DATA AND STATE ---
+        window.isLoggedIn = false; 
+        window.currentFilterType = 'All'; 
+        window.userId = null; 
+        window.isAuthReady = false; 
+        window.clientDeposit = 0.00; 
+        window.userName = 'Guest'; // NEW: Client's default user name
+        window.nickName = ''; // NEW: Client's nickname
+        window.currentChartSymbol = 'BTCUSD'; // NEW: Symbol for chart modal
+
+        const createAsset = (type, name, basePrice, baseVolume, decimal) => ({
+            type, name, price: basePrice, volume: baseVolume, decimal
+        });
+
+        const ASSETS = {
+            'AAPL': createAsset('Stocks', 'Apple Inc.', 175.00, '12M', 2),
+            'TSLA': createAsset('Stocks', 'Tesla Inc.', 230.50, '15M', 2),
+            'NVDA': createAsset('Stocks', 'NVIDIA Corp.', 900.00, '8M', 2),
+            'MSFT': createAsset('Stocks', 'Microsoft Corp.', 450.00, '9M', 2),
+            'GOOGL': createAsset('Stocks', 'Alphabet Inc. (Google)', 170.00, '7.5M', 2),
+            'AMZN': createAsset('Stocks', 'Amazon.com Inc.', 195.00, '10M', 2),
+            'BTCUSD': createAsset('Crypto', 'Bitcoin', 65000.00, '45B', 2),
+            'ETHUSD': createAsset('Crypto', 'Ethereum', 3500.00, '22B', 2),
+            'SOLUSD': createAsset('Crypto', 'Solana', 150.00, '5B', 2),
+            'USDTUSD': createAsset('Crypto', 'Tether USD', 1.0001, '60B', 4),
+            'XAUUSD': createAsset('Forex', 'Gold Spot', 2350.50, '1.2B', 2),
+            'EURUSD': createAsset('Forex', 'Euro/US Dollar', 1.0850, '800M', 4),
+            'GBPUSD': createAsset('Forex', 'Pound/US Dollar', 1.2500, '550M', 4),
+            'USDJPY': createAsset('Forex', 'US Dollar/Yen', 155.00, '700M', 2),
+        };
+
+        const INDICES = {
+            'SP500': { price: 5200.00, decimal: 2, currentChangeState: 'neutral' },
+            'BTC': { price: 65000.00, decimal: 2, currentChangeState: 'neutral' },
+            'EURUSD': { price: 1.0850, decimal: 4, currentChangeState: 'neutral' }
+        };
+        
+        const clientPortfolio = {
+            currentBalance: 0.00, 
+            dailyRate: 0.016, // CRITICAL UPDATE: 1.6% Daily Interest
+            accumulatedProfit: 0.00,
+            simulatedDailyTicks: 43200 // To simulate daily profit over 24 hours (2 seconds * 43200 ticks = 86400 seconds = 24 hours)
+        };
+
+        let dataUpdateInterval = null;
+
+
+        // --- CHART & MODAL LOGIC ---
+
+        function getTVSymbol(symbol, type) {
+            if (type === 'Crypto') return `BINANCE:${symbol.replace('USD', 'USDT')}`;
+            if (type === 'Forex') return `FX_IDC:${symbol}`;
+            if (type === 'Stocks' && symbol === 'XAUUSD') return `FX_IDC:${symbol}`; 
+            return symbol; 
+        }
+
+        function createTradingViewWidget(tvSymbol) {
+            if (typeof TradingView === 'undefined' || !TradingView.widget) {
+                setTimeout(() => createTradingViewWidget(tvSymbol), 200);
+                return;
+            }
+
+            const container = document.getElementById("tradingview-chart-container");
+            container.innerHTML = ''; 
+
+            try {
+                new TradingView.widget({
+                    "container_id": "tradingview-chart-container",
+                    "autosize": true,
+                    "symbol": tvSymbol,
+                    "interval": "60", // Hourly candles for better responsiveness
+                    "timezone": "Etc/UTC",
+                    "theme": "dark",
+                    "style": "1", 
+                    "locale": "en",
+                    "toolbar_bg": "#1f2937", 
+                    "enable_publishing": false,
+                    "allow_symbol_change": true,
+                    "studies": [
+                        { "id": "ParabolicSAR@tv-basicstudies" }, 
+                        { "id": "RSI@tv-basicstudies" } 
+                    ],
+                    "withdateranges": true,
+                    "hide_side_toolbar": false, 
+                    "details": true,
+                    "news": ["headlines"],
+                    "popup_features": { "no_referral_id": true },
+                    "save_image": false,
+                    "hide_top_toolbar": false,
+                    "hide_legend": false,
+                });
+            } catch (e) {
+                container.innerHTML = `<p class="text-red-500 font-semibold p-4">Error loading chart. Please try again.</p>`;
+            }
+        }
+
+        function openChartModal(symbol) {
+            const asset = ASSETS[symbol];
+            if (!asset) { return; }
+            
+            window.currentChartSymbol = symbol; // Set current symbol for trade buttons
+            const tvSymbol = getTVSymbol(symbol, asset.type);
+            document.getElementById('chart-title').textContent = `Real-time Chart for ${asset.name} (${symbol})`;
+            document.getElementById('chart-asset-info').textContent = `Trading ${symbol}. Current Price: $${asset.price.toLocaleString()}`;
+            document.getElementById('chart-modal').classList.remove('hidden');
+
+            const loadingHtml = `<svg class="animate-spin -ml-1 mr-3 h-5 w-5 text-blue-400" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg>Loading Chart Data...`;
+            document.getElementById('tradingview-chart-container').innerHTML = loadingHtml;
+            document.getElementById('tradingview-chart-container').classList.add('flex', 'items-center', 'justify-center');
+            
+            createTradingViewWidget(tvSymbol);
+        }
+
+        function closeChartModal() {
+            document.getElementById('chart-modal').classList.add('hidden');
+            document.getElementById('tradingview-chart-container').innerHTML = '';
+            document.getElementById('tradingview-chart-container').classList.remove('flex', 'items-center', 'justify-center');
+        }
+        
+        function executeChartTrade(type) {
+             if (!window.isLoggedIn) {
+                 alert("Please log in to execute trades.");
+                 return;
+             }
+             if (window.clientDeposit <= 0) {
+                 alert("Please make a deposit to activate trading (Go to Portfolio -> Invest & Earn).");
+                 return;
+             }
+             const symbol = window.currentChartSymbol;
+             const lotSize = parseFloat(document.getElementById('lot-size').value);
+             const asset = ASSETS[symbol];
+             const currentPrice = asset.price;
+
+             if (isNaN(lotSize) || lotSize <= 0) {
+                 alert("Please enter a valid lot size.");
+                 return;
+             }
+             
+             const tradeCost = lotSize * currentPrice;
+             if (tradeCost > window.clientPortfolio.currentBalance * 20) { // Simple leverage check
+                 alert("SIMULATION FAILED: Insufficient leverage/margin for this trade size.");
+                 return;
+             }
+             
+             // Placeholder for saving trade to Firestore
+             saveTrade({
+                 symbol: symbol,
+                 type: type,
+                 size: lotSize,
+                 entryPrice: currentPrice,
+                 status: 'Open',
+                 timestamp: new Date()
+             });
+             
+             alert(`TRADE OPENED: ${type} ${lotSize} lots of ${symbol} at $${currentPrice.toFixed(2)}.`);
+        }
+
+        function saveTrade(tradeData) {
+            if (window.isLoggedIn && window.userId) {
+                const tradeId = `${tradeData.symbol}-${Date.now()}`;
+                const tradeRef = window.getUserTradesRef(tradeId);
+                setDoc(tradeRef, tradeData, { merge: true });
+                console.log("Trade logged to Firestore:", tradeId);
+            }
+        }
+        
+        // --- NEW MODAL LOGIC ---
+        function openBankDepositModal() {
+            if (!window.isLoggedIn) {
+                alert("Please log in first to view deposit options.");
+                openAuthModal();
+                return;
+            }
+            if (window.clientDeposit <= 0) {
+                 alert("Please select an Investment Plan first before choosing a deposit method.");
+                 return;
+            }
+            const formatter = new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' });
+            document.getElementById('bank-deposit-message').innerHTML = `Selected plan amount: <strong class="text-xl text-blue-600">${formatter.format(window.clientDeposit)}</strong>`;
+            document.getElementById('transfer-amount-display').textContent = formatter.format(window.clientDeposit);
+            document.getElementById('transfer-details').classList.add('hidden'); // Hide transfer details initially
+            document.getElementById('bank-deposit-modal').classList.remove('hidden');
+        }
+        
+        function closeBankDepositModal() {
+            document.getElementById('bank-deposit-modal').classList.add('hidden');
+        }
+        
+        function showBankTransferDetails() {
+            document.getElementById('transfer-details').classList.remove('hidden');
+        }
+        
+        function openCryptoDepositModal() {
+            if (!window.isLoggedIn) {
+                alert("Please log in first to view deposit options.");
+                openAuthModal();
+                return;
+            }
+            document.getElementById('crypto-deposit-modal').classList.remove('hidden');
+        }
+        
+        function closeCryptoDepositModal() {
+            document.getElementById('crypto-deposit-modal').classList.add('hidden');
+        }
+
+        function simulateDepositAndClose(amount) {
+            // This is the CRITICAL SIMULATION step
+            if (window.isLoggedIn) {
+                 // Reset profit and update current balance to match deposit
+                 // If a specific amount is passed (from bank/crypto modal), use that, otherwise use the selected plan amount
+                 const depositAmount = amount || window.clientDeposit;
+                 
+                 // If clientDeposit was 0, set it to the deposited amount (useful for the crypto flow which allows any amount)
+                 if (window.clientDeposit === 0) {
+                     window.clientDeposit = depositAmount;
+                 }
+                 
+                 clientPortfolio.accumulatedProfit = 0.00;
+                 clientPortfolio.currentBalance = window.clientDeposit;
+                 
+                 window.saveDashboardState(); // Persist the new deposit amount
+                 window.updatePortfolioUI(); // Rerender
+                 showDepositAlert(window.clientDeposit);
+                 closeCryptoDepositModal();
+                 closeBankDepositModal();
+                 window.switchView('Portfolio');
+            } else {
+                 alert("Please log in and select a deposit plan before activating trading.");
+                 closeCryptoDepositModal();
+                 window.switchView('InvestmentPlans');
+            }
+        }
+        
+        // NEW: SET DEPOSIT AMOUNT with Balance Check
+        function setDepositAmount(amount) {
+            if (!window.isLoggedIn) {
+                alert("Please log in first before selecting a plan.");
+                openAuthModal();
+                return;
+            }
+            
+            // Set the desired deposit amount
+            window.clientDeposit = amount;
+            
+            // If the user already has a balance, check if it's enough for the plan
+            if (window.clientPortfolio.currentBalance < amount) {
+                alert(`Plan Selected: $${amount.toLocaleString()}. Proceed to select a Deposit Method.`);
+            } else {
+                alert(`Plan Selected: $${amount.toLocaleString()}. Your current balance is sufficient.`);
+            }
+
+            // Redirect to deposit choice (which is in the same view, but below)
+            const planView = document.getElementById('investment-plans-view');
+            planView.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        }
+        
+        // NEW: DEPOSIT ALERT LOGIC
+        function showDepositAlert(amount) {
+            const formatter = new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' });
+            const alertElement = document.getElementById('deposit-alert');
+            document.getElementById('alert-message').textContent = `Deposit of ${formatter.format(amount)} detected! Your trading is now active.`;
+            alertElement.classList.remove('hidden', '-translate-y-full');
+            alertElement.classList.add('translate-y-0');
+            
+            setTimeout(hideDepositAlert, 8000); // Auto-hide after 8 seconds
+        }
+
+        function hideDepositAlert() {
+            const alertElement = document.getElementById('deposit-alert');
+            alertElement.classList.remove('translate-y-0');
+            alertElement.classList.add('-translate-y-full');
+            setTimeout(() => { alertElement.classList.add('hidden'); }, 500); // Hide completely after transition
+        }
+        
+        // Auth Modals
+        function openAuthModal() {
+            document.getElementById('auth-modal').classList.remove('hidden');
+        }
+        function closeAuthModal() {
+            document.getElementById('auth-modal').classList.add('hidden');
+        }
+
+
+        // --- NAVIGATION & FILTER LOGIC (Updated to use primary-color) ---
+
+        /**
+         * Switches the main view and sets the market filter.
+         */
+        window.switchView = function(target) {
+            const marketView = document.getElementById('market-view');
+            const portfolioView = document.getElementById('portfolio-view');
+            const investmentPlansView = document.getElementById('investment-plans-view');
+            const navLinks = document.querySelectorAll('nav a');
+            
+            // Hide all main sections
+            marketView.classList.add('hidden');
+            portfolioView.classList.add('hidden');
+            investmentPlansView.classList.add('hidden');
+            
+            // Reset nav links styling
+            navLinks.forEach(link => {
+                link.classList.remove('font-bold', 'border-b-2', 'primary-border', 'primary-color');
+                link.classList.add('text-gray-200');
+            });
+            
+            // Handle view switching
+            if (target === 'Portfolio' || target === 'InvestmentPlans') {
+                if (!window.isLoggedIn) {
+                    openAuthModal();
+                    return; 
+                }
+                
+                // Show Portfolio view, as InvestmentPlans is a child action/view
+                portfolioView.classList.remove('hidden');
+                document.getElementById('nav-portfolio').classList.add('font-bold', 'border-b-2', 'primary-border', 'primary-color');
+                
+                // If the target is InvestmentPlans, display that specific section
+                if (target === 'InvestmentPlans') {
+                    investmentPlansView.classList.remove('hidden');
+                } else {
+                    investmentPlansView.classList.add('hidden');
+                }
+                
+                // For both sub-views, set filter to 'All'
+                window.currentFilterType = 'All';
+                window.saveDashboardState();
+                
+            } else { // Handle Market View (Overview and Filters)
+                marketView.classList.remove('hidden');
+                
+                const filterTarget = (target === 'Overview') ? 'All' : target;
+                
+                // CRITICAL: Update the global state and save to Firestore
+                window.currentFilterType = filterTarget;
+                window.saveDashboardState(); 
+                
+                const activeNavId = filterTarget === 'All' ? 'nav-overview' : `nav-${target.toLowerCase()}`;
+                const activeNavLink = document.getElementById(activeNavId);
+                if (activeNavLink) {
+                    activeNavLink.classList.add('font-bold', 'border-b-2', 'primary-border', 'primary-color');
+                    activeNavLink.classList.remove('text-gray-200');
+                }
+
+                applyMarketFilters(); 
+                updateAllData();
+            }
+        };
+        
+        function applyMarketFilters() {
+            const detailViewsContainer = document.getElementById('detail-views');
+            const trendingAssetsHeading = document.getElementById('trending-assets').querySelector('h2');
+
+            if (window.currentFilterType !== 'All') {
+                detailViewsContainer.classList.add('hidden');
+                trendingAssetsHeading.textContent = `Current ${window.currentFilterType} Instruments`;
+            } else {
+                detailViewsContainer.classList.remove('hidden');
+                trendingAssetsHeading.textContent = 'Top Movers & Watchlist';
+            }
+            // Re-run data update to apply the filter to the main table
+            updateAllData(); 
+        }
+
+        // NEW: SEARCH BAR FUNCTIONALITY
+        function filterAssetsBySearch() {
+            const searchTerm = document.getElementById('asset-search-input').value.toLowerCase();
+            const tableBody = document.getElementById('asset-table-body');
+            
+            // Re-render all assets based on the search term
+            renderAssetTable(searchTerm);
+        }
+
+        // --- AUTHENTICATION & PROFILE LOGIC ---
+        
+        function openProfileModal() {
+            if (!window.isLoggedIn) {
+                alert("Please log in to view your profile.");
+                openAuthModal();
+                return;
+            }
+            document.getElementById('profile-username').value = window.auth.currentUser.email;
+            document.getElementById('profile-nickname').value = window.nickName;
+            document.getElementById('profile-modal').classList.remove('hidden');
+        }
+
+        function closeProfileModal() {
+            document.getElementById('profile-modal').classList.add('hidden');
+        }
+
+        function saveProfileSettings(event) {
+            event.preventDefault();
+            window.nickName = document.getElementById('profile-nickname').value.trim();
+            window.saveDashboardState();
+            window.updateAuthUI();
+            closeProfileModal();
+            alert("Profile saved successfully.");
+        }
+
+
+        window.updateAuthUI = function() {
+            const authButton = document.getElementById('auth-button');
+            const firebaseUidStatus = document.getElementById('firebase-uid-status');
+            const portfolioActions = document.getElementById('portfolio-actions');
+            const openTradesCard = document.getElementById('open-trades-card');
+            const profileButton = document.getElementById('profile-button');
+            const profileDisplayName = document.getElementById('profile-display-name');
+            
+            const isClientActive = window.isLoggedIn && window.clientDeposit > 0;
+            
+            // Conditional visibility for portfolio actions
+            portfolioActions.classList.toggle('hidden', !window.isLoggedIn); // Portfolio view is always available if logged in
+            openTradesCard.classList.toggle('hidden', !isClientActive); // Open trades only shown if deposit > 0
+
+            // 1. Update Profile Button visibility and display name
+            if (window.isLoggedIn) {
+                profileButton.classList.remove('hidden');
+                profileDisplayName.textContent = window.nickName || window.userName;
+            } else {
+                 profileButton.classList.add('hidden');
+            }
+
+
+            // 2. Update Auth button
+            if (window.isLoggedIn) {
+                authButton.textContent = 'Logout';
+                authButton.classList.remove('primary-bg');
+                authButton.classList.add('bg-red-600', 'hover:bg-red-700');
+                
+                // 3. Status card update
+                firebaseUidStatus.textContent = window.userId;
+                firebaseUidStatus.classList.remove('text-red-600', 'font-semibold');
+                firebaseUidStatus.classList.add('text-green-600');
+                
+                document.getElementById('connection-status-dot').classList.remove('bg-red-500', 'animate-pulse');
+                document.getElementById('connection-status-dot').classList.add('bg-green-500');
+                
+            } else {
+                authButton.textContent = 'Client Login';
+                authButton.classList.remove('bg-red-600', 'hover:bg-red-700');
+                authButton.classList.add('primary-bg');
+                
+                firebaseUidStatus.textContent = 'Not Logged In';
+                firebaseUidStatus.classList.remove('text-green-600');
+                firebaseUidStatus.classList.add('text-red-600', 'font-semibold');
+                
+                document.getElementById('connection-status-dot').classList.remove('bg-green-500');
+                document.getElementById('connection-status-dot').classList.add('bg-red-500', 'animate-pulse');
+            }
+        };
+
+        function handleAuthAction() {
+            if (window.isLoggedIn) {
+                window.firebaseLogout();
+            } else {
+                openAuthModal();
+            }
+        }
+
+        async function handleLogin(event) {
+            event.preventDefault();
+            const email = document.getElementById('username').value;
+            const password = document.getElementById('password').value;
+
+            document.getElementById('login-message').textContent = 'Processing...';
+            document.getElementById('login-message').classList.remove('hidden');
+            
+            await window.firebaseLogin(email, password); 
+            
+            if (window.isLoggedIn) {
+                closeAuthModal();
+            }
+        }
+        
+        // NEW: API Config Modal Placeholder
+        function openApiConfigModal() {
+            alert("SIMULATION: API Configuration Modal is opened. Here you can link your brokerage API key.");
+        }
+        
+        // NEW: TRADE EXECUTION FUNCTION
+        function executeTrade(symbol, type, amount, action='Open') {
+            if (!window.isLoggedIn) {
+                 alert("Please log in to execute trades.");
+                 return;
+            }
+            if (window.clientDeposit <= 0) {
+                 alert("Please make a deposit to activate trading (Go to Portfolio -> Invest & Earn).");
+                 return;
+            }
+            // Log trade to Firebase (placeholder)
+            if (action === 'Open') {
+                saveTrade({
+                    symbol: symbol,
+                    type: type,
+                    size: amount,
+                    entryPrice: ASSETS[symbol].price,
+                    status: 'Open',
+                    timestamp: new Date()
+                });
+            } else if (action === 'Close') {
+                // Placeholder to find and update trade in Firebase (status: 'Closed', P&L calculation)
+                console.log(`Simulated: Closing trade for ${symbol}`);
+            }
+
+            alert(`SIMULATION: ${action} ${type} trade of ${amount} units of ${symbol} initiated on BlueCrest Broker.`);
+        }
+
+        
+        // --- PORTFOLIO & PROFIT LOGIC ---
+        
+        function updateProfit() {
+            if (!window.isLoggedIn || window.clientDeposit <= 0) return;
+            
+            // CRITICAL: Calculate daily interest based on currentBalance
+            const dailyProfitTarget = window.clientPortfolio.currentBalance * clientPortfolio.dailyRate;
+            const profitIncrement = dailyProfitTarget / clientPortfolio.simulatedDailyTicks;
+            
+            window.clientPortfolio.currentBalance += profitIncrement;
+            window.clientPortfolio.accumulatedProfit += profitIncrement;
+            
+            window.updatePortfolioUI();
+        }
+        
+        window.updatePortfolioUI = function() {
+            const formatter = new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' });
+            
+            // CRITICAL: Display clientDeposit as the Total Balance
+            document.getElementById('total-invested').textContent = formatter.format(window.clientDeposit);
+            
+            const currentBalanceElement = document.getElementById('current-balance');
+            const dailyProfitElement = document.getElementById('daily-profit');
+            
+            // Initialize if not set
+            if (window.clientDeposit > 0 && clientPortfolio.currentBalance === 0) {
+                 clientPortfolio.currentBalance = window.clientDeposit;
+            }
+
+            currentBalanceElement.textContent = formatter.format(clientPortfolio.currentBalance);
+            dailyProfitElement.textContent = formatter.format(clientPortfolio.accumulatedProfit);
+            
+            const profitState = clientPortfolio.accumulatedProfit >= 0 ? 'positive' : 'negative';
+            const balanceState = clientPortfolio.currentBalance >= window.clientDeposit ? 'positive' : 'negative';
+
+            dailyProfitElement.classList.remove('positive', 'negative', 'neutral');
+            dailyProfitElement.classList.add(profitState);
+            
+            currentBalanceElement.classList.remove('positive', 'negative', 'neutral');
+            currentBalanceElement.classList.add(balanceState);
+            
+            // Re-run Auth UI update to handle conditional button visibility
+            window.updateAuthUI();
+        }
+
+        // --- MARKET DATA LOGIC (Updated to support search filtering) ---
+
+        function generateRandomChange(currentPrice, maxPercentChange, decimalPlaces) {
+            const fluctuation = (Math.random() * maxPercentChange * 2) - maxPercentChange;
+            const change = currentPrice * (fluctuation / 100);
+            const newPrice = currentPrice + change;
+            const percentChange = (change / currentPrice) * 100;
+            
+            let changeState; 
+            const threshold = 0.01; 
+
+            if (percentChange > threshold) {
+                changeState = 'positive';
+            } else if (percentChange < -threshold) {
+                changeState = 'negative';
+            } else {
+                changeState = 'neutral';
+            }
+
+            return {
+                newPrice: parseFloat(newPrice.toFixed(decimalPlaces)),
+                change: parseFloat(change.toFixed(decimalPlaces)),
+                percentChange: parseFloat(percentChange.toFixed(2)),
+                changeState: changeState
+            };
+        }
+        
+        // NEW: Function to render the main asset table based on filter and search
+        function renderAssetTable(searchTerm = '') {
+            const assetTableBody = document.getElementById('asset-table-body');
+            assetTableBody.innerHTML = '';
+            
+            Object.keys(ASSETS).forEach(symbol => {
+                const asset = ASSETS[symbol];
+                
+                // Filter by type (Stocks, Crypto, Forex)
+                const matchesFilter = window.currentFilterType === 'All' || asset.type === window.currentFilterType;
+                
+                // Filter by search term
+                const matchesSearch = asset.name.toLowerCase().includes(searchTerm) || symbol.toLowerCase().includes(searchTerm);
+                
+                if (matchesFilter && matchesSearch) {
+                    const priceDisplay = asset.price.toLocaleString(undefined, { minimumFractionDigits: asset.decimal });
+                    const isPositive = asset.changeState === 'positive';
+                    const changePrefix = isPositive ? '+' : (asset.changeState === 'negative' ? '' : '');
+                    const changeDisplay = `${changePrefix}${asset.percentChange.toFixed(2)}%`;
+                    const changeClass = asset.changeState;
+                    
+                    const row = document.createElement('tr');
+                    row.className = `hover:bg-gray-100 transition duration-100 cursor-pointer`; 
+                    row.innerHTML = `
+                        <td class="px-6 py-4 whitespace-nowrap">
+                            <div class="flex items-center">
+                                <div class="text-sm font-medium text-gray-900">${symbol}</div>
+                                <span class="ml-2 px-2 inline-flex text-xs leading-5 font-semibold rounded-full bg-blue-200 text-blue-800">${asset.type}</span>
+                            </div>
+                        </td>
+                        <td class="px-6 py-4 whitespace-nowrap text-sm font-medium ${changeClass}">${priceDisplay}</td>
+                        <td class="px-6 py-4 whitespace-nowrap text-sm ${changeClass} font-semibold">${changeDisplay}</td>
+                        <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-600">${asset.volume}</td>
+                        <td class="px-6 py-4 whitespace-nowrap text-sm font-medium">
+                            <button onclick="executeTrade('${symbol}', 'Buy', 1)" class="text-green-600 hover:text-green-500 text-xs font-bold">Trade</button>
+                        </td>
+                        <td class="px-6 py-4 whitespace-nowrap text-sm font-medium">
+                            <button onclick="openChartModal('${symbol}')" class="bg-gray-200 hover:bg-gray-300 text-xs text-gray-800 font-bold py-1 px-3 rounded-lg transition duration-150">Chart</button>
+                        </td>
+                    `;
+                    assetTableBody.appendChild(row);
+                }
+            });
+        }
+
+        function updateAllData() {
+            const updateColoredElements = (element, changeState) => {
+                element.classList.remove('positive', 'negative', 'neutral'); 
+                element.classList.add(changeState);
+            };
+
+            // 1. Update Market Overview Indices
+            Object.keys(INDICES).forEach(symbol => {
+                const indexData = INDICES[symbol];
+                const { newPrice, change, percentChange, changeState } = generateRandomChange(indexData.price, 0.5, indexData.decimal);
+
+                indexData.price = newPrice;
+                indexData.currentChangeState = changeState; 
+                
+                const priceElement = document.getElementById(`${symbol.toLowerCase()}-price`);
+                const changeElement = document.getElementById(`${symbol.toLowerCase()}-change`);
+                const iconElement = document.getElementById(`${symbol.toLowerCase()}-icon`);
+
+                if (priceElement) {
+                    priceElement.textContent = newPrice.toLocaleString(undefined, { minimumFractionDigits: indexData.decimal });
+                    updateColoredElements(priceElement, changeState);
+                }
+
+                if (changeElement) {
+                    const isPositive = changeState === 'positive';
+                    const isNegative = changeState === 'negative';
+                    const changePrefix = isPositive ? '+' : (isNegative ? '' : ''); 
+                    changeElement.textContent = `${changePrefix}${change.toFixed(indexData.decimal)} (${changePrefix}${percentChange.toFixed(2)}%)`;
+                    updateColoredElements(changeElement, changeState);
+                    updateColoredElements(iconElement, changeState);
+                    if (iconElement) {
+                        let iconPath;
+                        if (isPositive) iconPath = 'M10 6l5 5H5l5-5z'; 
+                        else if (isNegative) iconPath = 'M10 14l-5-5h10l-5 5z';
+                        else iconPath = 'M10 10h.01'; 
+                        iconElement.querySelector('path').setAttribute('d', iconPath);
+                    }
+                }
+            });
+
+            // 2. Update Asset Data (Price Fluctuation)
+            let cryptoAssets = [];
+            Object.keys(ASSETS).forEach(symbol => {
+                const asset = ASSETS[symbol];
+                const { newPrice, percentChange, changeState } = generateRandomChange(asset.price, 1.5, asset.decimal);
+
+                asset.price = newPrice;
+                asset.percentChange = percentChange;
+                asset.changeState = changeState;
+
+                if (asset.type === 'Crypto') {
+                    cryptoAssets.push({ symbol, asset, priceDisplay: newPrice.toLocaleString(undefined, { minimumFractionDigits: asset.decimal }), changeDisplay: `${asset.changeState === 'positive' ? '+' : (asset.changeState === 'negative' ? '' : '')}${percentChange.toFixed(2)}%`, changeClass: changeState });
+                }
+            });
+            
+            // 3. Render all UI elements
+            
+            // Render the main table with current filter and search
+            filterAssetsBySearch(); 
+            
+            // Render side lists (only if filter is 'All')
+            if (window.currentFilterType === 'All') {
+                renderSideLists(cryptoAssets);
+            }
+            
+            // 4. Update Client Profit
+            updateProfit();
+        }
+        
+        function renderSideLists(cryptoAssets) {
+            const stockList = document.getElementById('stock-list');
+            const cryptoMoversList = document.getElementById('crypto-list-movers');
+            const cryptoTokensList = document.getElementById('crypto-list-tokens');
+            const forexList = document.getElementById('forex-list');
+
+            stockList.innerHTML = '';
+            cryptoMoversList.innerHTML = '';
+            cryptoTokensList.innerHTML = '';
+            forexList.innerHTML = '';
+            
+            const assetSymbols = Object.keys(ASSETS).sort(() => Math.random() - 0.5);
+
+            assetSymbols.forEach(symbol => {
+                const asset = ASSETS[symbol];
+                
+                const listItem = createSideListItem(asset, symbol);
+
+                if (asset.type === 'Stocks') stockList.appendChild(listItem);
+                if (asset.type === 'Forex') forexList.appendChild(listItem);
+            });
+            
+            // Top Movers: Sort by absolute change percentage
+            const topMovers = [...cryptoAssets].sort((a, b) => Math.abs(b.asset.percentChange) - Math.abs(a.asset.percentChange)).slice(0, 3);
+            topMovers.forEach(item => {
+                const listItem = createCryptoListItem(item);
+                cryptoMoversList.appendChild(listItem);
+            });
+            
+            // Popular Tokens: BTC, ETH, USDT first
+            const popularTokens = [
+                cryptoAssets.find(a => a.symbol === 'BTCUSD'),
+                cryptoAssets.find(a => a.symbol === 'ETHUSD'),
+                cryptoAssets.find(a => a.symbol === 'USDTUSD'),
+            ].filter(a => a);
+            popularTokens.forEach(item => {
+                const listItem = createCryptoListItem(item);
+                cryptoTokensList.appendChild(listItem);
+            });
+        }
+        
+        function createSideListItem(asset, symbol) {
+            const priceDisplay = asset.price.toLocaleString(undefined, { minimumFractionDigits: asset.decimal });
+            const changeDisplay = `${asset.changeState === 'positive' ? '+' : (asset.changeState === 'negative' ? '' : '')}${asset.percentChange.toFixed(2)}%`;
+            const changeClass = asset.changeState;
+            
+            const listItem = document.createElement('li');
+            listItem.className = `flex justify-between items-center py-2 border-b border-gray-200 last:border-b-0 transition duration-100 hover:bg-gray-100 px-2 rounded-lg`;
+            listItem.innerHTML = `
+                <div>
+                    <p class="text-sm font-medium text-gray-900">${asset.name} (${symbol})</p>
+                    <p class="text-xs text-gray-500 ${changeClass}">Price: ${priceDisplay}</p>
+                </div>
+                <div class="text-right">
+                    <p class="text-sm font-bold ${changeClass}">${changeDisplay}</p>
+                    <p class="text-xs text-gray-500">Vol: ${asset.volume}</p>
+                </div>
+            `;
+            return listItem;
+        }
+        
+        function createCryptoListItem(item) {
+            const listItem = document.createElement('li');
+            listItem.className = `flex justify-between items-center py-2 border-b border-gray-200 last:border-b-0 transition duration-100 hover:bg-gray-100 px-2 rounded-lg`;
+            listItem.innerHTML = `
+                <div>
+                    <p class="text-sm font-medium text-gray-900">${item.asset.name} (${item.symbol})</p>
+                    <p class="text-xs text-gray-500 ${item.changeClass}">Price: ${item.priceDisplay}</p>
+                </div>
+                <div class="text-right">
+                    <p class="text-sm font-bold ${item.changeClass}">${item.changeDisplay}</p>
+                    <p class="text-xs text-gray-500">Vol: ${item.asset.volume}</p>
+                </div>
+            `;
+            return listItem;
+        }
+
+        // Initial load and setup
+        window.onload = function() {
+            // Note: Auth state check and initial UI setup is handled by onAuthStateChanged in the module script.
+            
+            // Set up interval after initial data load
+            dataUpdateInterval = setInterval(updateAllData, 2000); 
+
+            const loginForm = document.getElementById('login-form');
+            if (loginForm) {
+                loginForm.addEventListener('submit', handleLogin);
+            }
+        };
+
+    </script>
+</body><script type="module">
+  // Import the functions you need from the SDKs you need
+  import { initializeApp } from "https://www.gstatic.com/firebasejs/12.5.0/firebase-app.js";
+  import { getAnalytics } from "https://www.gstatic.com/firebasejs/12.5.0/firebase-analytics.js";
+  // TODO: Add SDKs for Firebase products that you want to use
+  // https://firebase.google.com/docs/web/setup#available-libraries
+
+  // Your web app's Firebase configuration
+  // For Firebase JS SDK v7.20.0 and later, measurementId is optional
+  const firebaseConfig = {
+    apiKey: "AIzaSyCiwDw_YSYuhQwS6BkABnIlC_p5gfM22Yw",
+    authDomain: "bluecrest-3adb8.firebaseapp.com",
+    projectId: "bluecrest-3adb8",
+    storageBucket: "bluecrest-3adb8.firebasestorage.app",
+    messagingSenderId: "91306822368",
+    appId: "1:91306822368:web:916bd436df1e30121f1e85",
+    measurementId: "G-6S1LWW3NZJ"
+  };
+
+  // Initialize Firebase
+  const app = initializeApp(firebaseConfig);
+  const analytics = getAnalytics(app);
+</script>
+</html>
